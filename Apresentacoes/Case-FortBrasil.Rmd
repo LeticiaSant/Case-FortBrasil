@@ -1,0 +1,509 @@
+---
+title: "Case-FortBrasil"
+author: "Leticia Santana"
+date: "Maio de 2021"
+output: rmdformats::readthedown 
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options("scipen"=100, "digits"=4)
+library(dplyr)
+library(tidylog)
+library(ggplot2)
+library(ggthemes)
+library(gridExtra)
+library(plotly)
+library(reshape2)
+library(scales)
+library(ggrepel)
+library(knitr)
+library(psych)
+library(readr)
+library(Hmisc)
+library(forcats)
+library(stringr)
+library(lubridate)
+library(tsibble)
+library(sjstats)
+library(questionr)
+library(stats)
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+#selecionando diretorio
+setwd("/Hitalo/Documents/case-fortBrasil/")
+
+#importando base
+dadosQ1 = read.table("Bases/Q1.txt",header = T)
+colnames(dadosQ1) = tolower(colnames(dadosQ1))
+
+#transformando data vencimento em tipo data
+dadosQ1$dt_vencimento = as.Date(dadosQ1$dt_vencimento)
+
+#criando coluna ano mes
+dadosQ1_ = dadosQ1 %>% dplyr::mutate(mes_vencimento = yearmonth(dt_vencimento),
+                                     dt_vencimento_ini = as.Date(paste0(substr(dt_vencimento,1,8),'01')))
+
+
+```
+# Primeira questão
+## 1.1 – Qual o percentual de faturas emitidas por mês no qual os clientes não pagaram a fatura anterior? 
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+perc_rolag = dadosQ1_ %>% dplyr::group_by(`Mês Vencimento` = mes_vencimento) %>%
+  dplyr::summarise(`Percentual Faturas` = gsub(paste0(round((sum(ds_rolagem == "FX1")/dplyr::n())*100,2),"%"),pattern = "[.]",replacement = ","))
+
+
+kable(perc_rolag,digits = 2,format = "markdown",format.args = list(decimal.mark = ","), align = "l")
+```
+
+## 1.2 – Tendo como referência todos os clientes que tiveram fatura emitida no mês de setembro, gere uma base para esses clientes com os seguintes calculados:
+
+* Total de faturas emitidas nos últimos 6 meses (sem contar com a fatura de setembro);
+* O valor médio de fatura nos últimos 6 meses (sem contar com a fatura de setembro);
+* Quantidade de vezes que ele ficou sem pagar a fatura anterior nos últimos 6 meses (sem contar com a fatura de setembro). 
+
+Amostra da base gerada:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+dados_aux = dadosQ1_ %>% dplyr::filter(as.character(mes_vencimento) == "2019 set") 
+  
+
+dadosBase = dadosQ1_ %>% dplyr::filter(id_conta %in% dados_aux$id_conta,
+                                       dt_vencimento_ini >= unique(dados_aux$dt_vencimento_ini) %m-% months(6),
+                                       dt_vencimento_ini != unique(dados_aux$dt_vencimento_ini)) %>%
+  dplyr::group_by(id_conta) %>%
+  dplyr::summarise(qtd_faturas_ult_6m = dplyr::n(),
+                   vl_medio_fatura = round(mean(vl_fatura),2),
+                   qtd_faturas_ult_6m_fx1 = sum(ds_rolagem == 'FX1'))
+  
+baseCompQ1 = dados_aux %>%
+  dplyr::select(id_conta,ds_rolagem,dt_vencimento) %>% dplyr::left_join(dadosBase)
+
+
+kable(head(baseCompQ1),digits = 2,format = "markdown",format.args = list(decimal.mark = ","), align = "l")
+```
+
+## 1.3 – Utilizando como referência a base calculada na questão anterior, identifique qual das 3 variáveis calculadas tem o maior potencial de preditivo em relação a variável DS_ROLAGEM do mês de setembro. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+baseCompQ1_ = baseCompQ1 %>% mutate(default = case_when(ds_rolagem == 'FX1' ~ 1,TRUE ~ 0)) %>%
+  select(default,qtd_faturas_ult_6m,vl_medio_fatura,qtd_faturas_ult_6m_fx1)
+
+#removendo linhas onde tem dados faltantes
+baseCompQ1_rmna = na.omit(baseCompQ1_)
+
+
+```
+
+Para a resolução do problema proposto, inicialmente contruimos um modelo de regressão linear simples para cada variável que foi criada anteriormente, de acordo com a seguinte fórmula:
+
+$$
+Y_i = \beta_0 + \beta_1x_i + \epsilon_i, \hspace{0.3cm}    i = 1,...,n
+$$
+Em que:
+
+* $Y_i$: DS_ROLAGEM;
+* $\beta_0$: Intercepto;
+* $\beta_1$: Coeficiente angular;
+* $x_i$:  
+    + qtd_faturas_ult_6m: Total de faturas emitidas nos últimos 6 meses (sem contar com a fatura de setembro);
+    + vl_medio_fatura: O valor médio de fatura nos últimos 6 meses (sem contar com a fatura de setembro);
+    + qtd_faturas_ult_6m_fx1: Quantidade de vezes que ele ficou sem pagar a fatura anterior nos últimos 6 meses (sem contar com a fatura de setembro). 
+* $\epsilon_i$: Erro experimental.
+
+Resultados:
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+mod_qtd_faturas_ult_6m = lm(formula = default ~ qtd_faturas_ult_6m,data = baseCompQ1_rmna)
+rsquare_1 = summary(mod_qtd_faturas_ult_6m)$r.squared
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+mod_vl_medio_fatura = lm(formula = default ~ vl_medio_fatura,data = baseCompQ1_rmna)
+rsquare_2 = summary(mod_vl_medio_fatura)$r.squared
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+mod_qtd_faturas_ult_6m_fx1 = lm(formula = default ~ qtd_faturas_ult_6m_fx1,data = baseCompQ1_rmna)
+rsquare_3 = summary(mod_qtd_faturas_ult_6m_fx1)$r.squared
+
+kable(data_frame(`R-squared qtd_faturas_ult_6m` = rsquare_1,
+                 `R-squared vl_medio_fatura` = rsquare_2,
+                 `R-squared qtd_faturas_ult_6m_fx1` = rsquare_3),digits = 4,format = "markdown",format.args = list(decimal.mark = ","), align = "l")
+```
+
+<div style='text-align:justify'>
+
+Através do R-squared$(R^2)$ nós conseguimos avaliar a qualidade do ajuste do modelo, indicando quanto ele foi capaz de explicar os dados. Portanto, analisando os três modelos anteriores temos que a variável $x_i =$ qtd_faturas_ult_6m_fx1, que é a quantidade de vezes que o cliente ficou sem pagar a fatura anterior dos últimos 6 meses, obteve maior $R^2$, sendo a que melhor explica os dados da variável DS_ROLAGEM.
+
+Para compreendermos de forma mais clara a influência de cada variável no modelo, podemos utilizar a interpretação do odds ratio, que demonstra como cada variável implica no evento de interesse. Para o cálculo é preciso primeiramente ajustar um modelo de regressão logística.
+
+<div/>
+
+Resultados:
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+baseCompQ1_rmna$default = as.factor(baseCompQ1_rmna$default)
+
+mod_geral = glm(formula = default ~.,data = baseCompQ1_rmna,family = 'binomial')
+or = odds.ratio(mod_geral,level = 0.95)
+
+
+
+kable(or,digits = 4,format = "markdown",format.args = list(decimal.mark = ","), align = "l")
+```
+
+<div style='text-align:justify'>
+
+Analisando a tabela acima podemos ver que a variável "vl_medio_fatura", não foi significativa para o modelo através do p-valor maior que $\alpha = 0,05$, portanto, iremos analisar o odds ratios, somente das outras duas. A variável "qtd_faturas_ult_6m" possui um oddts de 0,8638, isso nos mostra que, a cada acréscimo de uma fatura emitida a chance do cliente não pagar a fatura é aproximadamente 15% menor. Já o odds ratio da "qtd_faturas_ult_6m_fx1" foi de 2,3328, nos indicando que a cada incremento de uma unidade nesta variável, a chance do cliente não pagar a fatura anterior nos últimos seis meses é aproximadamente duas vezes maior. 
+
+E com isso, concluimos que a variável "qtd_faturas_ult_6m_fx1" através do $R^2$ é a que melhor explica a variável resposta, e pelo odds ratio é a que possui a maior influência no evento de não pagamento.
+
+<div/>
+
+# Segunda Questão
+
+## 2.1 – Qual o percentual de adesão mensal por faixa de atraso (Histórico)? 
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+dadosQ21 = read.table("/Hitalo/Documents/case-fortBrasil/Bases/Q21.txt",header = T)
+colnames(dadosQ21) =  tolower(colnames(dadosQ21))
+dadosQ21$dt_acordo = as.Date(dadosQ21$dt_acordo)
+
+dadosQ22 = read.table("/Hitalo/Documents/case-fortBrasil/Bases/Q22.txt",header = T)
+colnames(dadosQ22) =  tolower(colnames(dadosQ22))
+dadosQ22$dt_acordo = as.Date(dadosQ22$dt_acordo)
+
+dadosQ23 = read.table("/Hitalo/Documents/case-fortBrasil/Bases/Q23.txt",header = T)
+colnames(dadosQ23) =  tolower(colnames(dadosQ23))
+dadosQ23$dt_acordo = as.Date(dadosQ23$dt_acordo)
+
+dadosQ24 = read.table("/Hitalo/Documents/case-fortBrasil/Bases/Q24.txt",header = T,sep = "\t")
+colnames(dadosQ24) =  tolower(colnames(dadosQ24))
+dadosQ24$dt_acordo = as.Date(dadosQ24$dt_acordo)
+
+dadosQ25 = read.table("/Hitalo/Documents/case-fortBrasil/Bases/Q25.txt",header = T)
+colnames(dadosQ25) =  tolower(colnames(dadosQ25))
+dadosQ25$dt_acordo = as.Date(dadosQ25$dt_acordo)
+
+baseCompQ2 = dadosQ21 %>% left_join(dadosQ22) %>%
+  left_join(dadosQ23) %>%
+  left_join(dadosQ24) %>%
+  left_join(dadosQ25)
+
+baseCompQ2_ = baseCompQ2 %>% dplyr::mutate(ano_mes = yearmonth(dt_acordo),
+                                           faixa_atraso = case_when((nu_dias_atraso >=180 & nu_dias_atraso <= 240) ~ "180-240 dias",
+                                                                    (nu_dias_atraso >240 & nu_dias_atraso <= 300) ~ "240-300 dias",
+                                                                    (nu_dias_atraso >300 & nu_dias_atraso <= 360) ~ "300-360 dias",
+                                                                    (nu_dias_atraso >360 & nu_dias_atraso <= 420) ~ "360-420 dias",
+                                                                    (nu_dias_atraso >420 & nu_dias_atraso <= 480) ~ "420-480 dias",
+                                                                    (nu_dias_atraso >480) ~ "480 dias-mais"))
+
+base_table = baseCompQ2_ %>% dplyr::group_by(ano_mes) %>%
+  dplyr::mutate(qtde_resposta = n()) %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(`Ano mês` = ano_mes, `Faixa de atraso`= faixa_atraso) %>%
+  dplyr::summarise(`Percentual de adesão` = gsub(paste0(round((sum(resposta==1)/max(qtde_resposta))*100,2),"%"),pattern = "[.]",replacement = ","))
+
+kable(base_table,digits = 4,format = "markdown",format.args = list(decimal.mark = ","), align = "l")
+
+```
+
+<div style='text-align:justify'>
+
+Ao analisarmos a tabela podemos notar que o mês de Abril apresentou um comportamento atípico, tendo maiores porcentuais de adesão, isso pode ser fruto de ações feitas pela empresa, que devem ser verificadas, pois, foram obtidos retornos positivos em relação aos outros meses analisados.
+
+<div/>
+
+## 2.2 – Qual modelo você utilizaria para traçar uma estratégia objetivando o aumento da adesão dos acordos? (Descreva a técnica utilizada)
+
+<div style='text-align:justify'>
+
+O modelo que utilizaremos será de regrasão logística, que tem como variável binária a resposta, geralmente denominadas por 0 e 1, a mesma é utilizada em várias áreas do conhecimento, por exemplo, componente eletrônico ser ou não defeituoso, um indivíduo dar ou não uma resposta errada, e no nosso caso aderir ou não ao acordo. Através deste modelo nós obtemos a probabilidade da ocorrência do evento de interesse para cada indivíduo analisado, além disso, também conseguimos entender quais fatores mais contribuíram para a ocorrência. Com esse entendimento é possível traçar um plano de ação para potencializar ou inibir o evento estudado.   
+
+<!-- E a estratégia sugerida seria a de desenvolver um modelo específico para cada faixa de rolagem da dívida, assim teriamos uma amostra mais homogênea que nos possibilitaria além de modelo melhor ajustado, um entendimento mais objetivo de até quando o acordo será aderido pelo cliente.  -->
+
+<!-- Sendo assim, teremos uma faixa de tempo em que poderemos focar esforços e com isso diminuirmos a rolagem da dívida. -->
+
+<!-- <div/> -->
+
+<!-- ```{r echo=FALSE, message=FALSE, warning=FALSE} -->
+<!-- g1 = baseCompQ2_ %>%  -->
+<!--   dplyr::group_by(faixa_atraso) %>% -->
+<!--   dplyr::summarise(perc_adesao = paste0(round((sum(resposta==1)/n())*100,2),"%"), -->
+<!--                    qtd_acionamento = n()) -->
+
+<!-- ggplot(g1) + -->
+<!--   aes(x = faixa_atraso, y = perc_adesao) + -->
+<!--   geom_tile(size = 1.2) + -->
+<!--   labs( -->
+<!--     x = "Faixa de atraso", -->
+<!--     y = "Percentual de adesão", -->
+<!--     title = "Percentual de adesão por faixa de atraso" -->
+<!--   ) + -->
+<!--  theme(legend.position = "none") -->
+
+<!-- ``` -->
+
+<!-- <div style='text-align:justify'> -->
+
+<!-- Analisando o gráfico acima decidimos utilizar neste modelo a faixa de atraso entre 180 e 240 dias, pois, a mesma nos indica onde temos o maior percentual de acordos aceitos, portanto, conseguindo aumentar esse percentual diminuiríamos a rolagem da dívida.  -->
+
+<div/>
+
+## 2.3 – Quais indicadores e ferramentas você utilizaria para avaliar a performance/aderência desse modelo? (Descreva os indicadores utilizados)
+
+<div style='text-align:justify'>
+
+Para avaliar o modelo utilizaremos: 
+
+1. Estatística Deviance: Uma medida importante para a avaliação de um modelo, buscando verificar se ele é o melhor indicado, também chamada de Desvio. Em alguns casos, esse tipo de avaliação também é denominado de bondade-de-ajuste. O começo desta medida é a geração de um modelo considerado parcimonioso, ou seja, aquele que mesmo com um número pequeno de coeficientes, consegue abranger toda a informação presente em uma amostra. O valor da Deviance sempre será maior do que zero, e quanto menor, melhor será o ajuste do modelo.
+
+2. Critério de informação de Akaike (AIC): Este critério seleciona um modelo que seja parcimonioso. O enfoque deste método é minimizar um valor exato, no qual é uma medida utilizada para avaliar a qualidade do ajuste em um modelo de regressão. Quanto menor for este valor encontrado, melhor será o ajuste do modelo.
+
+3. Estatística de Hosmer e Lemeshow: Obtida agrupando-se as observações em g grupos de tamanhos aproximadamente iguais, comparando os valores observados com os preditos. A principal fonte da estatística de Hosmer e Lemeshow é a estatística qui-quadrado de Pearson. As hipóteses são $H_0$: não existem diferenças significativas entre os valores preditos e observados e $H_1$: existe diferença. Analisando ao nível de significância de 5%.
+
+4. Tabela de classificação e curva ROC: 
+    + Tabela de classificação: 
+        + Especificidade: Mede a capacidade do modelo em prever corretamente a ausência do evento de interesse, quanto mais próximo a 1 melhor será o ajuste do modelo;
+        + Sensibilidade: Mede a capacidade do modelo prever corretamente a presença do efeito de interesse, quanto mais próximo a 1 melhor será o ajuste do modelo;
+        + Acurácia: Indica o potencial do modelo prever corretamente ausências e presenças do evento de interesse, quanto mais próximo a 1 melhor será o ajuste do modelo.
+    
+    + Curva ROC: É um gráfico dos pontos (Sensibilidade, 1 - Especificidade) obtidos e conectados por segmentos de reta. E de acordo com a área sob a curva que varia de 0,5 a 1, fornece uma medida de capacidade para que seja efetuado a discriminação entre os indivíduos que experimentam o resultado de interesse versus os que não experimentam. Quanto maior for o valor dessa área maior será a capacidade preditiva do modelo.
+
+5. Teste de Kolmogorov-Smirnov(KS):
+
+O teste KS é geralmente usado para medir a igualdade de duas distribuições, comparando seus CDFs. Um valor baixo de KS implica que as distribuições são iguais. No entanto, intuitivamente, também pode ser usado para decidir se duas distribuições são diferentes, ou seja, se o teste KS resulta em uma pontuação alta, podemos dizer que as distribuições são distinguíveis.
+
+Para testar a qualidade do ajuste para regressão logística, o teste KS é feito em TPR e FPR. A ideia principal é conseguir uma grande separação dessas duas curvas. Podemos então escolher o limite de probabilidade que corresponde à separabilidade máxima. Se o modelo for ideal, seu valor KS será igual a 1.
+
+<div/>
+
+## 2.4 – Apresente o modelo desenvolvido utilizando a técnica do item (2.2) e as técnicas de avaliação descritas no item (2.3).
+
+Inicialmente analisamos o percentual de 1 na variável resposta que foi de 2,95% o que nos mostra um resultado bem desbalanceado, com isso, foi preciso balancear os dados, o que utilizamos aqui foi de 50/50, 50% de 1 e 50% de 0 na variável resposta, posterior a isso dividimos a base em treino, 70% da base, e em teste, 30% da base.
+
+Em seguida ajustamos um modelo de regressão simples para cada variável explicativa, para observarmos se as mesmas eram significativas em relação a resposta.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+load("/Hitalo/Documents/case-fortBrasil/Scripts/teste_reg_log_sim.Rdata")
+
+
+kable(base_testes_fim,digits = 4,format = "markdown",format.args = list(decimal.mark = ","), align = "l")
+```
+
+Analisando a tabela acima nota-se que na coluna Significante tem "Sim" para se a variável foi significante. Após isso, analisamos se existia dependência e multicolinearidade entre as variáveis explicativas. E a existência de multcolinearidade foi confirmada, com isso, precisamos retirar as segintes variáveis:
+
+* divida_atual;
+* qtd_parcelamento_6m;
+* qtd_fx1_6m.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+load("/Hitalo/Documents/case-fortBrasil/Scripts/bestglm.Rdata")
+
+
+kable(bm,digits = 4,format = "markdown",format.args = list(decimal.mark = ","), align = "l")
+```
+
+Ajustando vários modelos com as variáveis que foram significativas, observamos o ajuste que possui o menor Criterion(AIC) é o modelo com todas as variáveis explicativas que anteriormente já foram comprovadas suas significâncias.
+
+Em seguida foi ajustado o modelo:
+
+$$ glm(formula = resposta ~ ., family = binomial(link = "logit"), 
+    data = base\_modmult\_fim\_vif) $$
+    
+
+E analisando a Deviance de 3765,7 que comparado aos outros modelos ajustados também foi menor, implicando em um melhor ajuste.
+    
+Dando sequência fizemos o teste de Hosmer e Lemeshow em que, o valor-p = 0,1 é maior que 0,05 implicando na não rejeição da hipótese nula, significando que não existem diferenças significativas entre os valores preditos e observados.
+
+Matriz de confusão do treino:
+
+````
+Confusion Matrix and Statistics
+
+    reference
+data   0   1
+   0 943 641
+   1 492 794
+                                              
+               Accuracy : 0.605               
+                 95% CI : (0.587, 0.623)      
+    No Information Rate : 0.5                 
+    P-Value [Acc > NIR] : < 0.0000000000000002
+                                              
+                  Kappa : 0.21                
+                                              
+ Mcnemar's Test P-Value : 0.000011            
+                                              
+            Sensitivity : 0.553               
+            Specificity : 0.657               
+         Pos Pred Value : 0.617               
+         Neg Pred Value : 0.595               
+             Prevalence : 0.500               
+         Detection Rate : 0.277               
+   Detection Prevalence : 0.448               
+      Balanced Accuracy : 0.605               
+                                              
+       'Positive' Class : 1  
+
+````
+
+Através da matriz de confusão podemos verificar uma acurácia de 60,5%, uma sensibilidade de 55,3% e uma especificidade de 65,7%. E para avaliarmos a aderência do modelo foi predito a base de teste.
+
+Curva ROC:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align="center"}
+
+knitr::include_graphics("/Hitalo/Documents/case-fortBrasil/imagens/Roc.png")
+```
+
+Com área sob a curva de 0,6527 mostrando um ajuste razoável do modelo.
+
+````
+Confusion Matrix and Statistics
+
+    reference
+data   0   1
+   0 398 258
+   1 218 358
+                                              
+               Accuracy : 0.614               
+                 95% CI : (0.586, 0.641)      
+    No Information Rate : 0.5                 
+    P-Value [Acc > NIR] : 0.000000000000000715
+                                              
+                  Kappa : 0.227               
+                                              
+ Mcnemar's Test P-Value : 0.0738              
+                                              
+            Sensitivity : 0.581               
+            Specificity : 0.646               
+         Pos Pred Value : 0.622               
+         Neg Pred Value : 0.607               
+             Prevalence : 0.500               
+         Detection Rate : 0.291               
+   Detection Prevalence : 0.468               
+      Balanced Accuracy : 0.614               
+                                              
+       'Positive' Class : 1 
+````
+Analisando a matriz acima observamos que o modelo se manteve semelhante ao treino o que nos dar indícios da não existência de overfitting(Quando o modelo é muito ajustado aos dados de treino e ineficaz de de prever dados novos).
+
+Posteriormente calculamos o Ks.teste com o intuito de analisar a semelhança entre as distribuições dos valores preditos do treino e do teste.
+
+````
+	Two-sample Kolmogorov-Smirnov test
+
+data:  pdata_train and pdata_test
+D = 0.027, p-value = 0.6
+alternative hypothesis: two-sided
+````
+
+Analisando o teste observamos o valor-p = 0,6, implicando em um ajuste razoável do modelo.
+
+# Terceira Questão
+
+<div style='text-align:justify'>
+
+Baseado nesse modelo relacional, disponibilize 4 querys .sql para que seja possível obter as seguintes informações:
+
+<div/>
+
+## 3.1 - Todas as compras realizadas no mês de janeiro de 2020 em lojas do estado do Ceará (CE)
+*	ID da pessoa
+*	Nome da pessoa
+*	Data Referência da Venda
+*	Valor da Venda
+
+````
+Select 
+dp.id_pessoa,
+dp.nm_pessoa,
+dt.dt_ref,
+fv.vl_venda
+from f_Vendas fv
+left join d_Tempos dt
+on fv.id_Tempo = dt.id_tempo
+left join d_Pessoa dp
+on fv.id_pessoa = dp.id_pessoa
+left join d_Loja dl
+on fv.id_loja = dl.id_loja
+where 1=1
+and dl.ds_uf = 'CE'
+and dt.nu_mes = 1
+and dt.nu_ano = 2020;
+````
+
+## 3.2 - Quantidade de compras por cliente no mês de março de 2020
+
+*	ID da pessoa
+*	Quantidade de compras
+
+````
+select 
+dp.id_pessoa,
+count(fv.id_venda) qtde_compras
+from f_Vendas fv
+left join d_Tempos dt
+on fv.id_Tempo = dt.id_tempo
+where 1=1
+and dt.nu_mes = 3
+and dt.nu_ano = 2020
+group by dp.id_pessoa;
+````
+## 3.3 – Todos os clientes que não fizeram compras no mês de março de 2020
+
+````
+select 
+ distinct fv.id_pessoa
+from f_Vendas fv
+where 1=1
+and fv.id_pessoa not exists (select 
+distinct fv.id_pessoa
+from f_Vendas fv
+left join d_Tempos dt
+on fv.id_Tempo = dt.id_tempo
+where 1=1
+dt.nu_mes = 3
+dt.nu_ano = 2020);
+````
+
+## 3.4 – Data da última compra por cliente
+
+````
+select 
+dp.id_pessoa,
+max(dt.dt_ref) dt_ultima_compra
+from f_Vendas fv
+left join d_Tempos dt
+on fv.id_Tempo = dt.id_tempo
+group by dp.id_pessoa;
+````
+
+
+
+
+
+
+
+
+
